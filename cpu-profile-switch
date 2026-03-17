@@ -1,0 +1,114 @@
+#!/bin/bash
+# Dynamically switches ACPI platform profile, EPP and turbo boost based on CPU
+# utilization and temperature. Quiet + no boost by default; ramps under load.
+# Sustains performance while CPU is still hot after load drops.
+
+QUIET_PROFILE="quiet"
+AC_LOAD_PROFILE="performance"
+BAT_LOAD_PROFILE="balanced"
+
+QUIET_EPP="balance_power"
+AC_LOAD_EPP="performance"
+BAT_LOAD_EPP="balance_performance"
+
+CPU_HIGH=40        # % utilization to enter performance mode
+CPU_LOW=10         # % utilization hysteresis - below this starts the cooldown
+TEMP_THRESHOLD=72  # degrees C - sustain performance until CPU cools below this
+COOLDOWN=10        # seconds below CPU_LOW AND below TEMP_THRESHOLD before going quiet
+POLL=2             # seconds between samples
+
+PROFILE_NODE="/sys/firmware/acpi/platform_profile"
+TURBO_NODE="/sys/devices/system/cpu/intel_pstate/no_turbo"
+EPP_NODE="cpufreq/energy_performance_preference"
+
+current_profile=""
+current_turbo=""
+current_epp=""
+last_loaded=0
+state="quiet"
+
+read_stat() {
+    awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9; exit}' /proc/stat
+}
+
+set_profile() {
+    local want="$1"
+    [[ "$want" == "$current_profile" ]] && return
+    echo "$want" > "$PROFILE_NODE" && current_profile="$want"
+}
+
+set_turbo() {
+    local want="$1"
+    [[ "$want" == "$current_turbo" ]] && return
+    echo "$want" > "$TURBO_NODE" && current_turbo="$want"
+}
+
+set_epp() {
+    local want="$1"
+    # No caching - TLP's udev rule can override EPP between our writes,
+    # causing the tracking variable to lie. Always write every iteration.
+    for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+        [[ -f "$cpu/$EPP_NODE" ]] && echo "$want" > "$cpu/$EPP_NODE"
+    done
+    current_epp="$want"
+}
+
+on_ac() {
+    grep -qr '^1$' /sys/class/power_supply/*/online 2>/dev/null
+}
+
+cpu_temp() {
+    for zone in /sys/class/thermal/thermal_zone*; do
+        if [[ "$(cat "$zone/type" 2>/dev/null)" == "x86_pkg_temp" ]]; then
+            awk '{printf "%d", $1/1000}' "$zone/temp"
+            return
+        fi
+    done
+    echo 0
+}
+
+cpu_usage() {
+    read -r u1 n1 s1 i1 w1 r1 x1 t1 <<< "$(read_stat)"
+    sleep "$POLL"
+    read -r u2 n2 s2 i2 w2 r2 x2 t2 <<< "$(read_stat)"
+    local total=$(( (u2+n2+s2+i2+w2+r2+x2+t2) - (u1+n1+s1+i1+w1+r1+x1+t1) ))
+    local idle=$(( i2+w2 - i1-w1 ))
+    (( total == 0 )) && echo 0 || echo $(( (total - idle) * 100 / total ))
+}
+
+apply_state() {
+    if [[ "$state" == "load" ]]; then
+        set_turbo 0
+        if on_ac; then
+            set_epp "$AC_LOAD_EPP"
+            set_profile "$AC_LOAD_PROFILE"
+        else
+            set_epp "$BAT_LOAD_EPP"
+            set_profile "$BAT_LOAD_PROFILE"
+        fi
+    else
+        set_turbo 1
+        set_epp "$QUIET_EPP"
+        set_profile "$QUIET_PROFILE"
+    fi
+}
+
+# Apply quiet state immediately on start regardless of what TLP left behind.
+apply_state
+
+while true; do
+    usage=$(cpu_usage)
+    temp=$(cpu_temp)
+
+    if (( usage >= CPU_HIGH )); then
+        state="load"
+        last_loaded=$SECONDS
+    elif (( usage >= CPU_LOW || temp >= TEMP_THRESHOLD )); then
+        # In hysteresis zone or still hot - sustain current state, reset cooldown.
+        last_loaded=$SECONDS
+    elif (( SECONDS - last_loaded >= COOLDOWN )); then
+        state="quiet"
+    fi
+
+    apply_state
+done
