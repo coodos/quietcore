@@ -1,6 +1,6 @@
 # quietcore
 
-Dynamic CPU power management for Linux laptops with `intel_pstate`. Silent at idle, full performance under load — no manual switching.
+Dynamic CPU power management for Linux laptops with `intel_pstate`. Silent at idle, full performance under load. No manual switching.
 
 Tested on Intel Core Ultra (Meteor Lake / Arrow Lake) but works on any laptop with `intel_pstate`, ACPI platform profiles, and TLP.
 
