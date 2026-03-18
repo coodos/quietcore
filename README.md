@@ -6,35 +6,36 @@ Tested on Intel Core Ultra (Meteor Lake / Arrow Lake) but works on any laptop wi
 
 ## How it works
 
-A small daemon samples CPU utilization every 2 seconds and switches the platform profile, EPP, and turbo boost together as a unit.
+A small daemon samples CPU and GPU utilization every 2 seconds and switches the platform profile, EPP, and turbo boost together as a unit.
 
 ```mermaid
 stateDiagram-v2
     [*] --> quiet: startup
 
+    quiet --> gpu: GPU >= 30%
     quiet --> load: CPU >= 40%
-    load --> quiet: CPU < 10% AND temp < 72C AND 10s elapsed
-
-    load --> load: CPU >= 40%
-    load --> load: 10% <= CPU < 40% (hysteresis)
-    load --> load: temp >= 72C (cooling down)
-    quiet --> quiet: CPU < 10%
+    gpu --> load: CPU >= 40% AND GPU < 30%
+    load --> gpu: GPU >= 30%
+    gpu --> quiet: CPU < 15% AND GPU < 10% AND temp < 72C AND 15s elapsed
+    load --> quiet: CPU < 15% AND GPU < 10% AND temp < 72C AND 15s elapsed
 ```
 
-**quiet state**
+**quiet state** (idle)
 - Platform profile: `quiet`
 - EPP: `balance_power`
 - Turbo: off
 
-**load state (on AC)**
+**gpu state** (gaming / GPU compute)
+- Platform profile: `balanced`
+- EPP: `balance_performance`
+- Turbo: on
+
+**load state** (compiling / CPU-heavy work)
 - Platform profile: `performance`
 - EPP: `performance`
 - Turbo: on
 
-**load state (on battery)**
-- Platform profile: `balanced`
-- EPP: `balance_performance`
-- Turbo: on
+On battery, load state uses `balanced` profile and `balance_performance` EPP instead.
 
 ### Decision loop
 

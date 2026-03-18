@@ -1,30 +1,38 @@
 #!/bin/bash
 # Dynamically switches ACPI platform profile, EPP and turbo boost based on CPU
-# utilization and temperature. Quiet + no boost by default; ramps under load.
-# Sustains performance while CPU is still hot after load drops.
+# utilization, GPU utilization, and temperature.
+#
+# States:
+#   quiet  - idle:       quiet profile,       balance_power EPP,        turbo off
+#   gpu    - GPU active: balanced profile,    balance_performance EPP,  turbo on
+#   load   - CPU active: performance profile, performance EPP,          turbo on
 
 QUIET_PROFILE="quiet"
-AC_LOAD_PROFILE="performance"
-BAT_LOAD_PROFILE="balanced"
+GPU_PROFILE="balanced"
+CPU_PROFILE="performance"
 
 QUIET_EPP="balance_power"
-AC_LOAD_EPP="performance"
-BAT_LOAD_EPP="balance_performance"
+GPU_EPP="balance_performance"
+CPU_EPP="performance"
 
-CPU_HIGH=40        # % utilization to enter performance mode
-CPU_LOW=10         # % utilization hysteresis - below this starts the cooldown
-TEMP_THRESHOLD=72  # degrees C - sustain performance until CPU cools below this
-COOLDOWN=10        # seconds below CPU_LOW AND below TEMP_THRESHOLD before going quiet
+CPU_HIGH=40        # % CPU utilization to enter load state
+CPU_LOW=15         # % CPU utilization hysteresis
+GPU_HIGH=30        # % GPU utilization to enter gpu state (of freq range)
+GPU_LOW=10         # % GPU utilization hysteresis
+TEMP_THRESHOLD=72  # degrees C - sustain current state until CPU cools below this
+COOLDOWN=15        # seconds both CPU and GPU below low threshold before going quiet
 POLL=2             # seconds between samples
 
 PROFILE_NODE="/sys/firmware/acpi/platform_profile"
 TURBO_NODE="/sys/devices/system/cpu/intel_pstate/no_turbo"
 EPP_NODE="cpufreq/energy_performance_preference"
+GT0_ACT="/sys/devices/pci0000:00/0000:00:02.0/tile0/gt0/freq0/act_freq"
+GT0_MIN="/sys/devices/pci0000:00/0000:00:02.0/tile0/gt0/freq0/rpn_freq"
+GT0_MAX="/sys/devices/pci0000:00/0000:00:02.0/tile0/gt0/freq0/rp0_freq"
 
 current_profile=""
 current_turbo=""
-current_epp=""
-last_loaded=0
+last_active=0
 state="quiet"
 
 read_stat() {
@@ -50,7 +58,6 @@ set_epp() {
     for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
         [[ -f "$cpu/$EPP_NODE" ]] && echo "$want" > "$cpu/$EPP_NODE"
     done
-    current_epp="$want"
 }
 
 on_ac() {
@@ -76,37 +83,58 @@ cpu_usage() {
     (( total == 0 )) && echo 0 || echo $(( (total - idle) * 100 / total ))
 }
 
+# GPU load as % of usable frequency range (act - min) / (max - min).
+# Returns 0 if sysfs nodes are not available.
+gpu_usage() {
+    [[ -f "$GT0_ACT" && -f "$GT0_MIN" && -f "$GT0_MAX" ]] || echo 0 && return
+    local act min max range
+    act=$(cat "$GT0_ACT")
+    min=$(cat "$GT0_MIN")
+    max=$(cat "$GT0_MAX")
+    range=$(( max - min ))
+    (( range <= 0 )) && echo 0 || echo $(( (act - min) * 100 / range ))
+}
+
 apply_state() {
-    if [[ "$state" == "load" ]]; then
-        set_turbo 0
-        if on_ac; then
-            set_epp "$AC_LOAD_EPP"
-            set_profile "$AC_LOAD_PROFILE"
-        else
-            set_epp "$BAT_LOAD_EPP"
-            set_profile "$BAT_LOAD_PROFILE"
-        fi
-    else
-        set_turbo 1
-        set_epp "$QUIET_EPP"
-        set_profile "$QUIET_PROFILE"
-    fi
+    case "$state" in
+        load)
+            set_turbo 0
+            set_epp "$CPU_EPP"
+            set_profile "$CPU_PROFILE"
+            ;;
+        gpu)
+            set_turbo 0
+            set_epp "$GPU_EPP"
+            set_profile "$GPU_PROFILE"
+            ;;
+        quiet)
+            set_turbo 1
+            set_epp "$QUIET_EPP"
+            set_profile "$QUIET_PROFILE"
+            ;;
+    esac
 }
 
 # Apply quiet state immediately on start regardless of what TLP left behind.
 apply_state
 
 while true; do
-    usage=$(cpu_usage)
+    cpu=$(cpu_usage)   # sleeps POLL seconds internally
+    gpu=$(gpu_usage)
     temp=$(cpu_temp)
 
-    if (( usage >= CPU_HIGH )); then
+    if (( gpu >= GPU_HIGH )); then
+        # GPU active - gaming or GPU compute. Use balanced, not full performance.
+        state="gpu"
+        last_active=$SECONDS
+    elif (( cpu >= CPU_HIGH )); then
+        # CPU active - compiling, encoding, etc. Full performance.
         state="load"
-        last_loaded=$SECONDS
-    elif (( usage >= CPU_LOW || temp >= TEMP_THRESHOLD )); then
-        # In hysteresis zone or still hot - sustain current state, reset cooldown.
-        last_loaded=$SECONDS
-    elif (( SECONDS - last_loaded >= COOLDOWN )); then
+        last_active=$SECONDS
+    elif (( cpu >= CPU_LOW || gpu >= GPU_LOW || temp >= TEMP_THRESHOLD )); then
+        # Hysteresis zone or still hot - stay in current state, reset cooldown.
+        last_active=$SECONDS
+    elif (( SECONDS - last_active >= COOLDOWN )); then
         state="quiet"
     fi
 
