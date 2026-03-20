@@ -86,7 +86,9 @@ cpu_usage() {
 # GPU load as % of usable frequency range (act - min) / (max - min).
 # Returns 0 if sysfs nodes are not available.
 gpu_usage() {
-    [[ -f "$GT0_ACT" && -f "$GT0_MIN" && -f "$GT0_MAX" ]] || echo 0 && return
+    if [[ ! -f "$GT0_ACT" || ! -f "$GT0_MIN" || ! -f "$GT0_MAX" ]]; then
+        echo 0; return
+    fi
     local act min max range
     act=$(cat "$GT0_ACT")
     min=$(cat "$GT0_MIN")
