@@ -39,7 +39,7 @@ status() {
 
 require_root() {
     [[ $EUID -eq 0 ]] && return
-    exec sudo "$0" "$@"
+    exec sudo /usr/local/bin/quietcore "$@"
 }
 
 usage() {
