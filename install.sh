@@ -24,6 +24,9 @@ install_files() {
     echo "Installing cpu-profile-switch..."
     install -m 755 "$SCRIPT_DIR/cpu-profile-switch" /usr/local/bin/cpu-profile-switch
 
+    echo "Installing quietcore CLI..."
+    install -m 755 "$SCRIPT_DIR/quietcore" /usr/local/bin/quietcore
+
     echo "Installing systemd service..."
     install -m 644 "$SCRIPT_DIR/cpu-profile-switch.service" /etc/systemd/system/cpu-profile-switch.service
 
@@ -79,6 +82,7 @@ uninstall() {
     echo "Uninstalling quietcore..."
     systemctl disable --now cpu-profile-switch 2>/dev/null || true
     rm -f /usr/local/bin/cpu-profile-switch
+    rm -f /usr/local/bin/quietcore
     rm -f /etc/systemd/system/cpu-profile-switch.service
     rm -f /etc/tlp.d/01-quietcore.conf
     systemctl daemon-reload

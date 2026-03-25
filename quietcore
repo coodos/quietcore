@@ -1,0 +1,91 @@
+#!/bin/bash
+# quietcore - manual override CLI for the cpu-profile-switch daemon
+
+PROFILE_NODE="/sys/firmware/acpi/platform_profile"
+TURBO_NODE="/sys/devices/system/cpu/intel_pstate/no_turbo"
+EPP_NODE="cpufreq/energy_performance_preference"
+SERVICE="cpu-profile-switch"
+OVERRIDE_FILE="/run/quietcore-override"
+
+set_epp() {
+    for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+        [[ -f "$cpu/$EPP_NODE" ]] && echo "$1" > "$cpu/$EPP_NODE"
+    done
+}
+
+apply() {
+    local profile="$1" epp="$2" turbo="$3"
+    echo "$profile" > "$PROFILE_NODE"
+    set_epp "$epp"
+    echo "$turbo" > "$TURBO_NODE"
+}
+
+status() {
+    local profile turbo epp mode
+    profile=$(cat "$PROFILE_NODE")
+    turbo=$(awk '{print ($1==0)?"on":"off"}' "$TURBO_NODE")
+    epp=$(cat /sys/devices/system/cpu/cpu0/"$EPP_NODE")
+    if [[ -f "$OVERRIDE_FILE" ]]; then
+        mode="manual ($(cat $OVERRIDE_FILE))"
+    else
+        mode="auto"
+    fi
+    echo "mode    : $mode"
+    echo "profile : $profile"
+    echo "epp     : $epp"
+    echo "turbo   : $turbo"
+    echo "service : $(systemctl is-active $SERVICE)"
+}
+
+require_root() {
+    [[ $EUID -eq 0 ]] && return
+    exec sudo "$0" "$@"
+}
+
+usage() {
+    echo "Usage: quietcore <command>"
+    echo ""
+    echo "Commands:"
+    echo "  auto          resume daemon control (default)"
+    echo "  performance   lock to performance profile + turbo on"
+    echo "  balanced      lock to balanced profile"
+    echo "  saver         lock to quiet profile + turbo off"
+    echo "  status        show current state"
+}
+
+case "${1:-status}" in
+    status)
+        status
+        ;;
+    auto)
+        require_root "$@"
+        rm -f "$OVERRIDE_FILE"
+        systemctl restart "$SERVICE"
+        echo "resumed auto mode"
+        ;;
+    performance)
+        require_root "$@"
+        echo "performance" > "$OVERRIDE_FILE"
+        systemctl stop "$SERVICE"
+        apply "performance" "performance" "0"
+        echo "locked: performance"
+        ;;
+    balanced)
+        require_root "$@"
+        echo "balanced" > "$OVERRIDE_FILE"
+        systemctl stop "$SERVICE"
+        apply "balanced" "balance_performance" "0"
+        echo "locked: balanced"
+        ;;
+    saver)
+        require_root "$@"
+        echo "saver" > "$OVERRIDE_FILE"
+        systemctl stop "$SERVICE"
+        apply "quiet" "balance_power" "1"
+        echo "locked: saver"
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
