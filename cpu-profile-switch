@@ -3,7 +3,7 @@
 # utilization, GPU utilization, and temperature.
 #
 # States:
-#   quiet  - idle:       quiet profile,       balance_power EPP,        turbo off
+#   quiet  - idle:       quiet profile,       balance_performance (AC) / balance_power (bat),  turbo off
 #   gpu    - GPU active: balanced profile,    balance_performance EPP,  turbo on
 #   load   - CPU active: performance profile, performance EPP,          turbo on
 
@@ -11,7 +11,8 @@ QUIET_PROFILE="quiet"
 GPU_PROFILE="balanced"
 CPU_PROFILE="performance"
 
-QUIET_EPP="balance_power"
+QUIET_EPP_AC="balance_performance"
+QUIET_EPP_BAT="balance_power"
 GPU_EPP="balance_performance"
 CPU_EPP="performance"
 
@@ -111,7 +112,11 @@ apply_state() {
             ;;
         quiet)
             set_turbo 1
-            set_epp "$QUIET_EPP"
+            if on_ac; then
+                set_epp "$QUIET_EPP_AC"
+            else
+                set_epp "$QUIET_EPP_BAT"
+            fi
             set_profile "$QUIET_PROFILE"
             ;;
     esac
